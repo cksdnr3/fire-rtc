@@ -54,9 +54,12 @@ async function joinRoomById(roomId) {
 
   if (roomSnapshot.exists) {
     peerConnection = new RTCPeerConnection(configuration);
+
     localStream.getTracks().forEach((track) => {
       peerConnection.addTrack(track, localStream);
     });
+
+    collectIceCandidates(roomRef, peerConnection);
 
     peerConnection.addEventListener("track", (event) => {
       event.streams[0].getTracks().forEach((track) => {
@@ -93,6 +96,10 @@ function onClickCreate() {
 
     peerConnection = new RTCPeerConnection(configuration);
 
+    localStream.getTracks().forEach((track) => {
+      peerConnection.addTrack(track, localStream);
+    });
+
     const offer = await peerConnection.createOffer();
     console.log("Set local description: ", offer);
     await peerConnection.setLocalDescription(offer);
@@ -116,17 +123,14 @@ function onClickCreate() {
 
     roomRef.onSnapshot(async (snapshot) => {
       console.log("Got updated room:", snapshot.data());
-      const data = snapshot.data();
-      if (!peerConnection.currentRemoteDescription && data.answer) {
-        console.log("Set remote description: ", data.answer);
-        const answer = new RTCSessionDescription(data.answer);
+      const answer = snapshot.data().answer;
+      if (!peerConnection.currentRemoteDescription && answer) {
+        console.log("Set remote description: ", answer);
         await peerConnection.setRemoteDescription(answer);
       }
     });
 
-    localStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localStream);
-    });
+    collectIceCandidates(roomRef, peerConnection);
 
     peerConnection.addEventListener("track", (event) => {
       event.streams[0].getTracks().forEach((track) => {
@@ -162,13 +166,16 @@ async function onClickHangup() {
   if (roomId) {
     const db = firebase.firestore();
     const roomRef = db.collection("rooms").doc(roomId);
+    const candidates = await roomRef.collection("candidates").get();
+    candidates.forEach(async (candidate) => {
+      await candidate.delete();
+    });
     await roomRef.delete();
   }
   // location.reload(true);
 }
 
 async function onClickOpenUserMedia() {
-  console.log("click open");
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: true,
     video: true,
@@ -185,11 +192,23 @@ async function onClickOpenUserMedia() {
   document.querySelector("#hangupBtn").disabled = false;
 }
 
-// function registerPeerConnectionListeners() {
-//   peerConnection.addEventListener("icegatheringstatechange", () => {});
-//   peerConnection.addEventListener("connectionstatechange", () => {});
-//   peerConnection.addEventListener("singlaingstatechange", () => {});
-//   peerConnection.addEventListener("iceconnectionstatechange", () => {});
-// }
+async function collectIceCandidates(roomRef, peerConnection) {
+  const candidatesCollection = roomRef.collection("candidates");
+  peerConnection.addEventListener("icecandidate", async (event) => {
+    if (event.candidate) {
+      const json = event.candidate.toJSON();
+      await candidatesCollection.add(json);
+    }
+  });
+
+  roomRef.collection("candidates").onSnapshot((snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.type === "added") {
+        const candidate = new RTCIceCandidate(change.doc.data());
+        peerConnection.addIceCandidate(candidate);
+      }
+    });
+  });
+}
 
 init();
